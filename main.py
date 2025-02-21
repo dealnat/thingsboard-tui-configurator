@@ -63,12 +63,14 @@ class YAMLEditor:
             self.stdscr.refresh()
             curses.napms(2000)
     def setup_screen(self):
+        curses.set_escdelay(1)  # Fix ESC delay
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)  # Selected item
-        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)  # Edit mode
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)  # Comments
-        curses.init_pair(4, curses.COLOR_GREEN, -1)  # Environment variables
+        curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        curses.init_pair(4, curses.COLOR_GREEN, -1)
+
 
         curses.curs_set(0)
         self.stdscr.keypad(True)
