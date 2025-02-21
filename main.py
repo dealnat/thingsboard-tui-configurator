@@ -34,14 +34,34 @@ class YAMLEditor:
     def __init__(self, stdscr, yaml_file: str):
         self.stdscr = stdscr
         self.yaml_file = yaml_file
+        self.changes: Dict[str, str] = {}
+        self.load_env_file()  # Load environment variables first
         self.root = self.parse_yaml()
         self.current_node = self.root
         self.nav_position = 0
         self.edit_position = 0
         self.edit_mode = False
-        self.changes: Dict[str, str] = {}
         self.setup_screen()
 
+    def load_env_file(self):
+        """Load existing environment variables from export.env file"""
+        try:
+            if os.path.exists('export.env'):
+                with open('export.env', 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('export '):
+                            # Remove 'export ' prefix and split into name and value
+                            env_setting = line[7:]  # Skip 'export '
+                            if '=' in env_setting:
+                                name, value = env_setting.split('=', 1)
+                                # Remove any surrounding quotes from the value
+                                value = value.strip('"\'')
+                                self.changes[name] = value
+        except Exception as e:
+            self.stdscr.addstr(0, 0, f"Error loading env file: {str(e)}")
+            self.stdscr.refresh()
+            curses.napms(2000)
     def setup_screen(self):
         curses.start_color()
         curses.use_default_colors()
@@ -76,9 +96,25 @@ class YAMLEditor:
                 # Add comments to nodes
                 self._add_comments(root, comments)
 
+                # Update values from loaded environment variables
+                self._update_node_values(root)
+
                 return root
         except Exception as e:
             return YAMLNode('root', {'error': f'Failed to load YAML: {str(e)}'})
+
+    def _update_node_values(self, node: YAMLNode):
+        """Update node values with values from export.env"""
+        if node.env_var and node.env_var in self.changes:
+            node.value = self.changes[node.env_var]
+        elif not node.env_var and node.is_leaf:
+            # Check if there's a value for the full path
+            node_path = self.get_node_path(node)
+            if node_path in self.changes:
+                node.value = self.changes[node_path]
+
+        for child in node.children:
+            self._update_node_values(child)
 
     def _add_comments(self, node: YAMLNode, comments: Dict[str, str]):
         if node.key in comments:
