@@ -1,0 +1,4 @@
+/thingsboard.yml
+.venv/
+myvenv/
+.idea/*
