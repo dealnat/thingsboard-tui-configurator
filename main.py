@@ -15,7 +15,6 @@ class YAMLNode:
         self.comment = None
 
         if isinstance(value, str):
-            # Extract environment variable and default value if present
             if value.startswith("${") and "}" in value:
                 env_part = value[2:value.index("}")]
                 if ":" in env_part:
@@ -35,33 +34,17 @@ class YAMLEditor:
         self.stdscr = stdscr
         self.yaml_file = yaml_file
         self.changes: Dict[str, str] = {}
-        self.load_env_file()  # Load environment variables first
+        self.original_values: Dict[str, str] = {}  # Store original values
+        self.load_env_file()
         self.root = self.parse_yaml()
         self.current_node = self.root
         self.nav_position = 0
+        self.scroll_offset = 0  # Add scroll offset
         self.edit_position = 0
+        self.edit_scroll_offset = 0  # Add scroll offset for edit pane
         self.edit_mode = False
         self.setup_screen()
 
-    def load_env_file(self):
-        """Load existing environment variables from export.env file"""
-        try:
-            if os.path.exists('export.env'):
-                with open('export.env', 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('export '):
-                            # Remove 'export ' prefix and split into name and value
-                            env_setting = line[7:]  # Skip 'export '
-                            if '=' in env_setting:
-                                name, value = env_setting.split('=', 1)
-                                # Remove any surrounding quotes from the value
-                                value = value.strip('"\'')
-                                self.changes[name] = value
-        except Exception as e:
-            self.stdscr.addstr(0, 0, f"Error loading env file: {str(e)}")
-            self.stdscr.refresh()
-            curses.napms(2000)
     def setup_screen(self):
         curses.set_escdelay(1)  # Fix ESC delay
         curses.start_color()
@@ -70,7 +53,6 @@ class YAMLEditor:
         curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
         curses.init_pair(3, curses.COLOR_YELLOW, -1)
         curses.init_pair(4, curses.COLOR_GREEN, -1)
-
 
         curses.curs_set(0)
         self.stdscr.keypad(True)
@@ -124,12 +106,6 @@ class YAMLEditor:
         for child in node.children:
             self._add_comments(child, comments)
 
-    def get_navigable_nodes(self) -> List[YAMLNode]:
-        return [node for node in self.current_node.children if not node.is_leaf]
-
-    def get_editable_nodes(self) -> List[YAMLNode]:
-        return [node for node in self.current_node.children if node.is_leaf]
-
     def get_node_path(self, node: YAMLNode) -> str:
         path = []
         current = node
@@ -137,11 +113,63 @@ class YAMLEditor:
             path.append(current.key)
             current = current.parent
         return '_'.join(reversed(path))
+    def load_env_file(self):
+        try:
+            if os.path.exists('export.env'):
+                with open('export.env', 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('export '):
+                            env_setting = line[7:]
+                            if '=' in env_setting:
+                                name, value = env_setting.split('=', 1)
+                                value = value.strip('"\'')
+                                self.changes[name] = value
+                                self.original_values[name] = value  # Store original value
+        except Exception as e:
+            self.stdscr.addstr(0, 0, f"Error loading env file: {str(e)}")
+            self.stdscr.refresh()
+            curses.napms(2000)
+
+    def has_unsaved_changes(self) -> bool:
+        return self.changes != self.original_values
+
+    def confirm_exit(self) -> bool:
+        if not self.has_unsaved_changes():
+            return True
+
+        height, width = self.stdscr.getmaxyx()
+        confirm_win = curses.newwin(5, 40, height // 2 - 2, width // 2 - 20)
+        confirm_win.box()
+        confirm_win.addstr(1, 2, "Unsaved changes. Save before exit?")
+        confirm_win.addstr(3, 2, "[Y]es  [N]o  [C]ancel")
+        confirm_win.refresh()
+
+        while True:
+            key = self.stdscr.getch()
+            if key in [ord('y'), ord('Y')]:
+                self.save_changes()
+                return False
+            elif key in [ord('n'), ord('N')]:
+                return False
+            elif key in [ord('c'), ord('C'), 27]:  # 'C' or ESC
+                return True
+
+    def save_changes(self):
+        with open('export.env', 'w') as f:
+            for env_name, value in self.changes.items():
+                f.write(f"export {env_name}={value}\n")
+    def get_navigable_nodes(self) -> List[YAMLNode]:
+        return [node for node in self.current_node.children if not node.is_leaf]
+
+    def get_editable_nodes(self) -> List[YAMLNode]:
+        return [node for node in self.current_node.children if node.is_leaf]
 
     def draw_screen(self):
         self.stdscr.clear()
         height, width = self.stdscr.getmaxyx()
         nav_width = width // 3
+        max_display_items = height - 4  # Reserve space for header and footer
 
         # Draw divider
         for y in range(height):
@@ -151,46 +179,49 @@ class YAMLEditor:
         self.stdscr.addstr(0, 2, "Navigation", curses.A_BOLD)
         self.stdscr.addstr(0, nav_width + 2, "Properties", curses.A_BOLD)
 
-        # Draw navigation items
+        # Draw navigation items with scrolling
         nav_items = self.get_navigable_nodes()
-        for idx, node in enumerate(nav_items):
-            if idx >= height - 3:
+        visible_nav_items = nav_items[self.scroll_offset:self.scroll_offset + max_display_items]
+
+        for idx, node in enumerate(visible_nav_items):
+            if idx >= max_display_items:
                 break
 
-            # Prepare the display string
             display = f"  {node.key}"
             if node.comment:
                 display = f"{display} {node.comment}"
 
-            if idx == self.nav_position and not self.edit_mode:
+            actual_idx = idx + self.scroll_offset
+            if actual_idx == self.nav_position and not self.edit_mode:
                 self.stdscr.attron(curses.A_REVERSE)
-                self.stdscr.addstr(idx + 2, 2, display)
+                self.stdscr.addstr(idx + 2, 2, display[:nav_width - 3])
                 self.stdscr.attroff(curses.A_REVERSE)
             else:
-                self.stdscr.addstr(idx + 2, 2, display)
+                self.stdscr.addstr(idx + 2, 2, display[:nav_width - 3])
 
-        # Draw editable items
+        # Draw editable items with scrolling
         edit_items = self.get_editable_nodes()
-        for idx, node in enumerate(edit_items):
-            if idx >= height - 3:
+        visible_edit_items = edit_items[self.edit_scroll_offset:self.edit_scroll_offset + max_display_items]
+
+        for idx, node in enumerate(visible_edit_items):
+            if idx >= max_display_items:
                 break
 
-            # Prepare the display string
             if node.env_var:
                 value_display = f"{node.value} (${node.env_var})"
             else:
                 value_display = str(node.value)
 
             display = f"{node.key}: {value_display}"
+            actual_idx = idx + self.edit_scroll_offset
 
-            if idx == self.edit_position and self.edit_mode:
+            if actual_idx == self.edit_position and self.edit_mode:
                 self.stdscr.attron(curses.color_pair(2))
                 self.stdscr.addstr(idx + 2, nav_width + 2, display)
                 self.stdscr.attroff(curses.color_pair(2))
             else:
                 self.stdscr.addstr(idx + 2, nav_width + 2, display)
 
-            # Draw comment if exists
             if node.comment:
                 comment_pos = nav_width + 4 + len(display)
                 if comment_pos + len(node.comment) < width:
@@ -198,12 +229,24 @@ class YAMLEditor:
                     self.stdscr.addstr(idx + 2, comment_pos, node.comment)
                     self.stdscr.attroff(curses.color_pair(3))
 
-        # Draw current path
+        # Draw scroll indicators
+        if len(nav_items) > max_display_items:
+            if self.scroll_offset > 0:
+                self.stdscr.addstr(1, nav_width - 2, "↑")
+            if self.scroll_offset + max_display_items < len(nav_items):
+                self.stdscr.addstr(height - 2, nav_width - 2, "↓")
+
+        if len(edit_items) > max_display_items:
+            if self.edit_scroll_offset > 0:
+                self.stdscr.addstr(1, width - 2, "↑")
+            if self.edit_scroll_offset + max_display_items < len(edit_items):
+                self.stdscr.addstr(height - 2, width - 2, "↓")
+
+        # Draw current path and help text
         path = self.get_node_path(self.current_node)
         path_display = f"Path: {path}" if path else "Path: /"
         self.stdscr.addstr(height - 2, 2, path_display, curses.A_DIM)
 
-        # Draw help text
         help_text = "TAB: Toggle Edit | ENTER: Select/Edit | ESC: Back/Exit | ↑↓: Navigate"
         self.stdscr.addstr(height - 1, 2, help_text, curses.A_DIM)
 
@@ -220,7 +263,7 @@ class YAMLEditor:
         edit_win.addstr(0, 2, key_name)
 
         if node.env_var:
-            edit_win.addstr(0, width - len(env_name) - 5, env_name )
+            edit_win.addstr(0, width - len(env_name) - 5, env_name)
 
         current_value = str(node.value)
         edit_win.addstr(1, 2, f"Current: {current_value}")
@@ -232,7 +275,7 @@ class YAMLEditor:
         curses.curs_set(2)
 
         # Get input
-        edit_win.move(2,  13)
+        edit_win.move(2, 13)
         new_value = edit_win.getstr().decode('utf-8')
 
         # Restore cursor and echo settings
@@ -244,32 +287,36 @@ class YAMLEditor:
             # Save to export.env
             env_name = node.env_var if node.env_var else self.get_node_path(node)
             self.changes[env_name] = new_value
-            self.save_changes()
-
-    def save_changes(self):
-        with open('export.env', 'w') as f:
-            for env_name, value in self.changes.items():
-                f.write(f"export {env_name}={value}\n")
-
     def handle_navigation(self, key):
         if key == curses.KEY_UP:
             if self.edit_mode:
-                self.edit_position = max(0, self.edit_position - 1)
+                if self.edit_position > 0:
+                    self.edit_position -= 1
+                    if self.edit_position < self.edit_scroll_offset:
+                        self.edit_scroll_offset = self.edit_position
             else:
-                self.nav_position = max(0, self.nav_position - 1)
+                if self.nav_position > 0:
+                    self.nav_position -= 1
+                    if self.nav_position < self.scroll_offset:
+                        self.scroll_offset = self.nav_position
         elif key == curses.KEY_DOWN:
+            items = self.get_editable_nodes() if self.edit_mode else self.get_navigable_nodes()
+            max_pos = len(items) - 1
+
             if self.edit_mode:
-                edit_items = self.get_editable_nodes()
-                if edit_items:
-                    self.edit_position = min(len(edit_items) - 1, self.edit_position + 1)
+                if self.edit_position < max_pos:
+                    self.edit_position += 1
+                    height = self.stdscr.getmaxyx()[0] - 4
+                    if self.edit_position >= self.edit_scroll_offset + height:
+                        self.edit_scroll_offset = self.edit_position - height + 1
             else:
-                nav_items = self.get_navigable_nodes()
-                if nav_items:
-                    self.nav_position = min(len(nav_items) - 1, self.nav_position + 1)
+                if self.nav_position < max_pos:
+                    self.nav_position += 1
+                    height = self.stdscr.getmaxyx()[0] - 4
+                    if self.nav_position >= self.scroll_offset + height:
+                        self.scroll_offset = self.nav_position - height + 1
         elif key == ord('\t'):
             self.edit_mode = not self.edit_mode
-            self.nav_position = 0  # Reset position when switching tabs
-            self.edit_position = 0
         elif key == ord('\n'):
             if self.edit_mode:
                 edit_items = self.get_editable_nodes()
@@ -279,17 +326,21 @@ class YAMLEditor:
                 nav_items = self.get_navigable_nodes()
                 if nav_items and 0 <= self.nav_position < len(nav_items):
                     self.current_node = nav_items[self.nav_position]
-                    self.nav_position = 0  # Reset to top when entering a node
+                    self.nav_position = 0
+                    self.scroll_offset = 0
                     self.edit_position = 0
+                    self.edit_scroll_offset = 0
         elif key == 27:  # ESC
             if self.edit_mode:
                 self.edit_mode = False
             elif self.current_node.parent:
                 self.current_node = self.current_node.parent
                 self.nav_position = 0
+                self.scroll_offset = 0
                 self.edit_position = 0
+                self.edit_scroll_offset = 0
             else:
-                return False  # Exit program if at root
+                return self.confirm_exit()
         return True
 
     def run(self):
