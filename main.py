@@ -125,9 +125,9 @@ class YAMLEditor:
                 display = f"{display} {node.comment}"
 
             if idx == self.nav_position and not self.edit_mode:
-                self.stdscr.attron(curses.color_pair(1))
+                self.stdscr.attron(curses.A_REVERSE)
                 self.stdscr.addstr(idx + 2, 2, display)
-                self.stdscr.attroff(curses.color_pair(1))
+                self.stdscr.attroff(curses.A_REVERSE)
             else:
                 self.stdscr.addstr(idx + 2, 2, display)
 
@@ -175,24 +175,26 @@ class YAMLEditor:
         height, width = self.stdscr.getmaxyx()
 
         # Create edit window
-        edit_win = curses.newwin(3, width - 4, height - 4, 2)
+        edit_win = curses.newwin(5, width - 4, height - 6, 2)
         edit_win.box()
-        edit_win.addstr(0, 2, f"Edit {node.key}")
+        key_name = f"Edit {node.key}"
+        env_name = f"ENV: ${node.env_var}"
+        edit_win.addstr(0, 2, key_name)
 
         if node.env_var:
-            edit_win.addstr(0, width - 20, f"ENV: ${node.env_var}")
+            edit_win.addstr(0, width - len(env_name) - 5, env_name )
 
         current_value = str(node.value)
         edit_win.addstr(1, 2, f"Current: {current_value}")
-        edit_win.addstr(1, width - 20, "New value: ")
+        edit_win.addstr(2, 2, "New value: ")
         edit_win.refresh()
 
         # Enable cursor and echo for input
         curses.echo()
-        curses.curs_set(1)
+        curses.curs_set(2)
 
         # Get input
-        edit_win.move(1, width - 10)
+        edit_win.move(2,  13)
         new_value = edit_win.getstr().decode('utf-8')
 
         # Restore cursor and echo settings
